@@ -674,6 +674,7 @@ public class GeoServerRESTPublisher {
      * <li>{@link #GEOTIFF} GeoTiff coverage
      * <li>{@link #IMAGEMOSAIC} ImageMosaic
      * <li>{@link #WORLDIMAGE} Geo referenced image (JPEG,PNG,TIF)
+     * <li>{@link #NITF} NITF coverage
      * </ul>
      * 
      * @author Carlo Cancellieri - carlo.cancellieri@geo-solutions.it
@@ -684,8 +685,10 @@ public class GeoServerRESTPublisher {
         /** ImageMosaic */
         IMAGEMOSAIC,
         /** Geo referenced image (JPEG,PNG,TIF) */
-        WORLDIMAGE;
-
+        WORLDIMAGE,
+        /** NITF coverage */
+        NITF;
+        
         /**
          * Returns a lowercase representation of the parameter value, suitable to construct the rest call.
          */
@@ -1815,6 +1818,209 @@ public class GeoServerRESTPublisher {
             return false;
         }
         return true;
+    }
+    
+    // ==========================================================================
+    // === NITF
+    // ==========================================================================
+
+    /**
+     * Upload and publish a NITF image.
+     * 
+     * @param workspace Workspace to use
+     * @param storeName The store name to be used or created.
+     * @param nitf The NITF file.
+     * @return true if success.
+     * @throws FileNotFoundException if NITF file does not exist.
+     */
+    public boolean publishNITF(String workspace, String storeName, File nitf)
+            throws FileNotFoundException {
+        return publishCoverage(workspace, storeName, CoverageStoreExtension.NITF,
+                "image/nitf", nitf, ParameterConfigure.FIRST, (NameValuePair[]) null);
+    }
+
+    /**
+     * Upload and publish a NITF image.
+     * 
+     * @param workspace Workspace to use
+     * @param storeName Name of the coveragestore (if null the file name will be used)
+     * @param coverageName the name of the coverage (if null the file name will be used)
+     * @param nitf file to upload
+     * @return true if the operation completed successfully.
+     * @throws FileNotFoundException if file does not exists
+     * @throws IllegalArgumentException if workspace or nitf are null
+     */
+    public boolean publishNITF(final String workspace, final String storeName,
+            final String coverageName, final File nitf) throws FileNotFoundException,
+            IllegalArgumentException {
+        if (workspace == null || nitf == null)
+            throw new IllegalArgumentException("Unable to proceed, some arguments are null");
+
+        return publishCoverage(
+                workspace,
+                (storeName != null) ? storeName : FilenameUtils.getBaseName(nitf
+                        .getAbsolutePath()), CoverageStoreExtension.NITF, "image/nitf",
+                nitf, ParameterConfigure.FIRST,
+                (coverageName != null) ? new NameValuePair[] { new NameValuePair("coverageName",
+                        coverageName) } : (NameValuePair[]) null);
+    }
+
+    /**
+     * Same as {@link #publishNITF(String, String, String, File, String, ProjectionPolicy, String, double[])} but without the last parameter
+     * (bbox). Kept here for backwards compatibility.
+     * 
+     * @deprecated use the former method with bbox set to null.
+     */
+    public boolean publishNITF(String workspace, String storeName, String resourceName,
+            File nitf, String srs, ProjectionPolicy policy, String defaultStyle)
+            throws FileNotFoundException, IllegalArgumentException {
+        return publishGeoTIFF(workspace, storeName, resourceName, nitf, srs, policy,
+                defaultStyle, null);
+    }
+
+    /**
+     * Upload and publish a NITF image.
+     * 
+     * @param workspace Workspace to use
+     * @param storeName Name of the coveragestore (if null the file name will be used)
+     * @param coverageName the name of the coverage (if null the file name will be used)
+     * @param nitf file to upload
+     * @param srs the native CRS
+     * @param policy projection policy. See {@link ProjectionPolicy}.
+     * @param defaultStyle the default style to apply.
+     * @param bbox An array of 4 doubles indicating envelope in EPSG:4326. Order is [Xmin, Ymin, Xmax, Ymax].
+     * @return true if the operation completed successfully.
+     * @throws FileNotFoundException if file does not exists
+     * @throws IllegalArgumentException if workspace or nitf are null
+     * 
+     */
+    public boolean publishNITF(String workspace, String storeName, String coverageName,
+            File nitf, String srs, ProjectionPolicy policy, String defaultStyle, double[] bbox)
+            throws FileNotFoundException, IllegalArgumentException {
+        if (workspace == null || storeName == null || nitf == null || coverageName == null
+                || srs == null || policy == null || defaultStyle == null)
+            throw new IllegalArgumentException("Unable to run: null parameter");
+
+        if (!createCoverageStore(
+                workspace,
+                (storeName != null) ? storeName : FilenameUtils.getBaseName(nitf
+                        .getAbsolutePath()), UploadMethod.FILE, CoverageStoreExtension.NITF,
+                "image/nitf", nitf.toURI(), ParameterConfigure.NONE, (NameValuePair[]) null)) {
+            LOGGER.error("Unable to create coverage store for coverage: " + nitf);
+            return false;
+        }
+
+        // config coverage props (srs)
+        final GSCoverageEncoder coverageEncoder = new GSCoverageEncoder();
+        coverageEncoder.setName(coverageName);
+        coverageEncoder.setTitle(coverageName);
+        coverageEncoder.setSRS(srs);
+        coverageEncoder.setProjectionPolicy(policy);
+        if (bbox != null && bbox.length == 4) {
+            coverageEncoder.setLatLonBoundingBox(bbox[0], bbox[1], bbox[2], bbox[3], DEFAULT_CRS);
+        }
+
+        if (!createCoverage(workspace, storeName, coverageEncoder)) {
+            LOGGER.error("Unable to create a coverage store for coverage: " + nitf);
+            return false;
+        }
+
+        // config layer props (style, ...)
+        final GSLayerEncoder layerEncoder = new GSLayerEncoder();
+        layerEncoder.setDefaultStyle(defaultStyle);
+
+        return configureLayer(workspace, coverageName, layerEncoder);
+    }
+
+    /**
+     * Publish a NITF already in a filesystem readable by GeoServer.
+     * 
+     * @param workspace an existing workspace
+     * @param storeName the coverageStore to be created
+     * @param nitf the NITF to be published
+     * @param srs the native CRS
+     * @param policy projection policy. See {@link ProjectionPolicy}.
+     * @param defaultStyle the default style to apply.
+     * 
+     * @return true if the operation completed successfully.
+     * @throws FileNotFoundException if file does not exists
+     * @throws IllegalArgumentException if any of the mandatory parameters are null.
+     */
+    public boolean publishExternalNITF(String workspace, String storeName, File nitf,
+            String coverageName, String srs, ProjectionPolicy policy, String defaultStyle)
+            throws FileNotFoundException, IllegalArgumentException {
+        if (workspace == null || storeName == null || nitf == null || coverageName == null
+                || srs == null || policy == null || defaultStyle == null)
+            throw new IllegalArgumentException("Unable to run: null parameter");
+
+        // config coverage props (srs)
+        final GSCoverageEncoder coverageEncoder = new GSCoverageEncoder();
+        coverageEncoder.setName(coverageName);
+        coverageEncoder.setTitle(coverageName);
+        coverageEncoder.setSRS(srs);
+        coverageEncoder.setProjectionPolicy(policy);
+
+        // config layer props (style, ...)
+        final GSLayerEncoder layerEncoder = new GSLayerEncoder();
+        layerEncoder.setDefaultStyle(defaultStyle);
+
+        return publishExternalNITF(workspace, storeName, nitf, coverageEncoder, layerEncoder) != null ? true
+                : false;
+    }
+
+    /**
+     * Publish a NITF already in a filesystem readable by GeoServer.
+     * 
+     * @param workspace an existing workspace
+     * @param storeName the coverageStore to be created
+     * @param nitf the NITF to be published
+     * @param coverageEncoder coverage details. See {@link GSCoverageEncoder}.
+     * @param layerEncoder layer details, See {@link GSLayerEncoder}.
+     * 
+     * @return true if the operation completed successfully.
+     * @throws FileNotFoundException if file does not exists
+     * @throws IllegalArgumentException if any of the mandatory parameters are null.
+     */
+    public RESTCoverageStore publishExternalNITF(final String workspace, final String storeName,
+            final File nitf, final GSCoverageEncoder coverageEncoder,
+            final GSLayerEncoder layerEncoder) throws IllegalArgumentException,
+            FileNotFoundException {
+
+        if (workspace == null || nitf == null || storeName == null || layerEncoder == null
+                || coverageEncoder == null)
+            throw new IllegalArgumentException("Unable to run: null parameter");
+
+        final String coverageName = coverageEncoder.getName();
+        if (coverageName.isEmpty()) {
+            throw new IllegalArgumentException("Unable to run: empty coverage store name");
+        }
+
+        // create store
+        final boolean store = publishExternalCoverage(workspace, storeName,
+                CoverageStoreExtension.NITF, "text/plain", nitf, ParameterConfigure.NONE,
+                ParameterUpdate.OVERWRITE);
+        if (!store) {
+            return null;
+        }
+
+        // create Coverage Store
+        if (!createCoverage(workspace, storeName, coverageEncoder)) {
+            if (LOGGER.isErrorEnabled())
+                LOGGER.error("Unable to create a coverage for the store:" + coverageName);
+            return null;
+        }
+
+        // create Layer
+        if (configureLayer(workspace, coverageName, layerEncoder)) {
+            GeoServerRESTReader reader;
+            try {
+                reader = new GeoServerRESTReader(this.restURL, this.gsuser, this.gspass);
+                return reader.getCoverageStore(workspace, storeName);
+            } catch (MalformedURLException e) {
+                LOGGER.error(e.getMessage(), e);
+            }
+        }
+        return null;
     }
 
     // ==========================================================================
